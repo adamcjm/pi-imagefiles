@@ -1,0 +1,33 @@
+{
+  "name": "pi-imagefiles",
+  "version": "1.0.0",
+  "description": "Upload images to the DeepSeek Files API and reference them by file_id in vision requests, keeping request bodies small — same strategy as dsh.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "deepseek",
+    "vision",
+    "files-api",
+    "image"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamcjm/pi-imagefiles.git"
+  },
+  "homepage": "https://github.com/adamcjm/pi-imagefiles",
+  "bugs": {
+    "url": "https://github.com/adamcjm/pi-imagefiles/issues"
+  },
+  "files": [
+    "extensions"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-imagefiles"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
