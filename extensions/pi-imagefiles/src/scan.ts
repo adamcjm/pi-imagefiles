@@ -25,6 +25,23 @@ export const OFFLOADED_IMAGE_TEXT =
 
 export const DEEPSEEK_VISION_MODEL_RE = /deepseek[^"]*vision/i;
 
+/** DeepSeek official gateway (only this host has the Files API this extension relies on). */
+export const DEEPSEEK_OFFICIAL_HOST = "api.deepseek.com";
+
+/**
+ * Eligibility: the request must target the official DeepSeek gateway with a
+ * vision model. Third-party providers that re-export models with similar ids
+ * (e.g. gateways/proxies) are deliberately left untouched — their endpoints
+ * do not serve this extension's Files API, and injecting a {"type":"file"}
+ * part into a request they do not understand could fail the whole call.
+ */
+export function isEligible(model: { id?: string; baseUrl?: string } | undefined, payloadModel: unknown): boolean {
+  const id = model?.id ?? (typeof payloadModel === "string" ? payloadModel : undefined);
+  if (typeof id !== "string" || !DEEPSEEK_VISION_MODEL_RE.test(id)) return false;
+  if (model?.baseUrl === undefined) return false; // no model metadata: stay inert
+  return model.baseUrl.includes(DEEPSEEK_OFFICIAL_HOST);
+}
+
 interface ImageRef {
   messageIndex: number;
   blockIndex: number;

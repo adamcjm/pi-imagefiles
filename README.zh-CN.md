@@ -12,7 +12,7 @@ Pi 会把每张截图以 `data:image/...;base64,...` 内联进 provider 请求�
 
 与 `dsh`（deepseek-harness）完全一致的流程和预算：
 
-1. **上传** —— 每次 provider 请求前，图片上传到 `POST /v1/files`（`purpose=user_data`）。仅作用于 **DeepSeek 视觉模型**（`deepseek-v4-flash-vision-exp` 及任何 `deepseek*vision*` 模型 id）；其他 provider/模型完全不受影响。
+1. **上传** —— 每次 provider 请求前，图片上传到 `POST /v1/files`（`purpose=user_data`）。仅作用于目标为 **DeepSeek 官方网关**（`api.deepseek.com`）且为 **视觉模型**（`deepseek*vision*` 模型 id）的请求；其他 provider/模型完全不受影响。
 2. **引用** —— 每个图片块替换为 `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]`，这正是 DeepSeek chat-completions API 接受的线格式。
 3. **缓存** —— 以 sha256 内容寻址，存于 `~/.pi/agent/data/pi-imagefiles-cache.json`；同一张图只上传一次，跨请求、跨会话复用。文件有效期 **7 天**（dsh 默认值），过期前 1 小时自动重新上传。
 4. **预算 / 卸载** —— 采用 dsh 默认值：每请求 **128 MiB** 文件引用图片字节、**600 张** 图片上限；超预算时*最旧*的图片替换为占位文本（`[image omitted to keep the request within its image limit; older images are omitted first...]`），以确定性的量子（64 MiB / 20 张）裁剪。
@@ -65,7 +65,7 @@ bun run test/run-tests.ts   # 单元自检，无需网络
 
 - 图片句柄文本包含图片尺寸（从 PNG/JPEG/WebP/GIF 头部解析），帮助模型理解坐标映射。
 - 通过本扩展上传的图片仅由 `/imagefiles reset` 从缓存删除；Files API 侧 7 天后自动过期。
-- 非 DeepSeek 的 provider 绝不触碰 —— 使用其他视觉 provider 时本扩展保持惰性。
+- **作用域守卫**：扩展同时校验模型 id（`deepseek*vision*`）与请求 `baseUrl`（`api.deepseek.com`）。三方网关/中转站即使导出同名 DeepSeek 模型也被刻意排除——它们的端点并不提供本扩展依赖的 Files API，向其请求注入它们不认识的 `{"type":"file"}` 部分可能导致整个调用失败。当模型元数据不可用时扩展保持惰性。
 
 ## 许可证
 

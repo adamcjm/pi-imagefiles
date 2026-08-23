@@ -12,7 +12,7 @@ Pi sends every screenshot as inline `data:image/...;base64,...` in the provider 
 
 Identical pipeline and budgets to `dsh` (deepseek-harness):
 
-1. **Upload** — before each provider request, images are uploaded to `POST /v1/files` (`purpose=user_data`). Only **DeepSeek vision models** (`deepseek-v4-flash-vision-exp` and any `deepseek*vision*` model id) are touched; every other provider/model passes through untouched.
+1. **Upload** — before each provider request, images are uploaded to `POST /v1/files` (`purpose=user_data`). Only requests targeting the **official DeepSeek gateway** (`api.deepseek.com`) with a **vision model** (`deepseek*vision*` model id) are touched; every other provider/model passes through untouched.
 2. **Reference** — each image block becomes `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]`, exactly the wire format the DeepSeek chat-completions API accepts.
 3. **Cache** — content-addressed by sha256 in `~/.pi/agent/data/pi-imagefiles-cache.json`; the same image uploads once and is reused across requests and sessions. Files live **7 days** (dsh's default), refreshed 1 hour before expiry.
 4. **Budget / offload** — the dsh defaults: **128 MiB** of file-referenced image bytes and **600 images** per request; over budget the *oldest* images are replaced with a placeholder text (`[image omitted to keep the request within its image limit; older images are omitted first...]`), in deterministic quanta (64 MiB / 20 images).
@@ -65,7 +65,7 @@ Integration check (real API): upload a screenshot, call `chat/completions` with 
 
 - The image handle text carries the image's dimensions (parsed from PNG/JPEG/WebP/GIF headers) so the model understands the coordinate mapping.
 - Images uploaded through this extension are deleted from the cache only by `/imagefiles reset`; the Files API side expires them after 7 days.
-- Non-DeepSeek providers are never touched — if you use another vision provider, the extension stays inert.
+- **Scope guard**: the extension verifies both the model id (`deepseek*vision*`) *and* the request `baseUrl` (`api.deepseek.com`). Third-party gateways/proxies that re-export DeepSeek models under the same id are deliberately left untouched — their endpoints do not serve this Files API, and injecting a `{"type":"file"}` part they do not understand could fail the whole call. If the model metadata is unavailable the extension stays inert.
 
 ## License
 

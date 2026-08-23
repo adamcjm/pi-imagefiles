@@ -17,17 +17,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { FilesApiCache } from "./src/files-api.ts";
-import { DEEPSEEK_VISION_MODEL_RE, processPayload } from "./src/scan.ts";
+import { isEligible, processPayload } from "./src/scan.ts";
 
 export default function (pi: ExtensionAPI) {
   const cache = new FilesApiCache(join(getAgentDir(), "data"));
 
-  pi.on("before_provider_request", async (event) => {
+  pi.on("before_provider_request", async (event, ctx) => {
     try {
       const payload = event.payload as any;
       if (!payload || typeof payload !== "object") return;
-      const model: unknown = payload.model;
-      if (typeof model !== "string" || !DEEPSEEK_VISION_MODEL_RE.test(model)) return;
+      // Official DeepSeek gateway + vision model only (see isEligible).
+      if (!isEligible(ctx.model as { id?: string; baseUrl?: string } | undefined, payload.model)) return;
       const result = await processPayload(payload, cache);
       return result.payload;
     } catch (error) {

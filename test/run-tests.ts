@@ -4,7 +4,7 @@
  * format, upload-failure fallback, and image-size parsing. No network.
  */
 import assert from "node:assert";
-import { collectImages, offloadCount, processPayload, DEEPSEEK_VISION_MODEL_RE } from "../extensions/pi-imagefiles/src/scan.ts";
+import { collectImages, isEligible, offloadCount, processPayload, DEEPSEEK_VISION_MODEL_RE } from "../extensions/pi-imagefiles/src/scan.ts";
 import { parseImageSize } from "../extensions/pi-imagefiles/src/image-size.ts";
 import { FilesApiCache, FILE_EXPIRY_SECONDS } from "../extensions/pi-imagefiles/src/files-api.ts";
 
@@ -50,6 +50,18 @@ class FakeCache extends FilesApiCache {
 assert.ok(DEEPSEEK_VISION_MODEL_RE.test("deepseek-v4-flash-vision-exp"), "vision model matches");
 assert.ok(!DEEPSEEK_VISION_MODEL_RE.test("deepseek-v4-pro"), "pro model does not match");
 assert.ok(!DEEPSEEK_VISION_MODEL_RE.test("gpt-4o"), "other providers do not match");
+
+// --- 1b. eligibility: official gateway only ---------------------------------
+const official = { id: "deepseek-v4-flash-vision-exp", baseUrl: "https://api.deepseek.com" };
+assert.ok(isEligible(official, "deepseek-v4-flash-vision-exp"), "official deepseek vision model is eligible");
+// third-party gateway re-exporting the same model id
+const thirdParty = { id: "deepseek-v4-flash-vision-exp", baseUrl: "https://my-gateway.example.com/v1" };
+assert.ok(!isEligible(thirdParty, "deepseek-v4-flash-vision-exp"), "third-party gateway with same id is NOT eligible");
+// model id not vision, official host
+assert.ok(!isEligible({ id: "deepseek-v4-pro", baseUrl: "https://api.deepseek.com" }, "deepseek-v4-pro"), "official text model is not eligible");
+// no model metadata (ctx.model missing)
+assert.ok(!isEligible(undefined, "deepseek-v4-flash-vision-exp"), "missing model metadata stays inert");
+console.log("ok isEligible");
 
 // --- 2. collectImages ------------------------------------------------------
 const payload = makePayload(["AAA", "BBB"]);
