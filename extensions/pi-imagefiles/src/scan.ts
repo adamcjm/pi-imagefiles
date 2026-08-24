@@ -1,15 +1,20 @@
 /**
- * Request payload transformation: find inline base64 images in a
- * DeepSeek vision request, upload them to the Files API, and replace
- * them with text + {"type":"file","file_id":...} parts.
+ * Request payload transformation for DeepSeek vision models.
+ *
+ * Mode "upload" (official DeepSeek gateway, api.deepseek.com):
+ *   inline base64 images → Files API upload → text + {"type":"file","file_id":...}
+ * Mode "offload-only" (third-party DeepSeek vision gateways like opencode
+ *   zen/go — no Files API, same 50 MiB upstream limit):
+ *   no uploads; only the dsh-style offload budget keeps the request small.
  *
  * Budgets mirror dsh-llm-deepseek defaults:
  *   maxRequestFilesBytes   128 MiB   (file-referenced image bytes)
  *   maxImagesPerRequest    600
  *   imageOffloadByteQuantum 64 MiB
  *   imageOffloadCountQuantum 20
- * Over budget: oldest images become a placeholder text (dsh's exact copy),
- * so context stays bounded no matter how long the session runs.
+ * Over budget: oldest images become a placeholder text carrying the parsed
+ * image facts (dimensions / mime / sha256), so the model knows what was
+ * omitted and can rely on what it already saw earlier in the conversation.
  */
 
 import { parseImageSize } from "./image-size.ts";
@@ -21,25 +26,30 @@ const BYTE_QUANTUM = 64 * 1024 * 1024;
 const COUNT_QUANTUM = 20;
 
 export const OFFLOADED_IMAGE_TEXT =
-  "[image omitted to keep the request within its image limit; older images are omitted first. If this image is still needed, read its file again when a path is available; otherwise ask the user to attach it again.]";
+  "[image omitted to keep the request within its image limit; older images are omitted first.]";
 
 export const DEEPSEEK_VISION_MODEL_RE = /deepseek[^"]*vision/i;
 
-/** DeepSeek official gateway (only this host has the Files API this extension relies on). */
+/** DeepSeek official gateway (the only host with the Files API). */
 export const DEEPSEEK_OFFICIAL_HOST = "api.deepseek.com";
 
+export type ImageFilesMode = "upload" | "offload-only" | "none";
+
 /**
- * Eligibility: the request must target the official DeepSeek gateway with a
- * vision model. Third-party providers that re-export models with similar ids
- * (e.g. gateways/proxies) are deliberately left untouched — their endpoints
- * do not serve this extension's Files API, and injecting a {"type":"file"}
- * part into a request they do not understand could fail the whole call.
+ * Resolve the processing mode for a request.
+ * - "upload": deepseek*vision* model on the official gateway → Files API + offload
+ * - "offload-only": deepseek*vision* model elsewhere (third-party gateways that
+ *   re-export the model, no model metadata, etc.) → offload only, no uploads,
+ *   because injecting {"type":"file"} into a gateway that does not understand
+ *   it could fail the whole call. The upstream still enforces the same ~50 MiB
+ *   request limit, so trimming is safe and useful.
+ * - "none": anything else.
  */
-export function isEligible(model: { id?: string; baseUrl?: string } | undefined, payloadModel: unknown): boolean {
+export function resolveMode(model: { id?: string; baseUrl?: string } | undefined, payloadModel: unknown): ImageFilesMode {
   const id = model?.id ?? (typeof payloadModel === "string" ? payloadModel : undefined);
-  if (typeof id !== "string" || !DEEPSEEK_VISION_MODEL_RE.test(id)) return false;
-  if (model?.baseUrl === undefined) return false; // no model metadata: stay inert
-  return model.baseUrl.includes(DEEPSEEK_OFFICIAL_HOST);
+  if (typeof id !== "string" || !DEEPSEEK_VISION_MODEL_RE.test(id)) return "none";
+  if (model?.baseUrl && model.baseUrl.includes(DEEPSEEK_OFFICIAL_HOST)) return "upload";
+  return "offload-only";
 }
 
 interface ImageRef {
@@ -103,20 +113,37 @@ function handleText(sha8: string, mimeType: string, size?: { width: number; heig
 }
 
 /**
+ * Placeholder for an offloaded image: parsed image facts (mime, dimensions,
+ * sha256), so the model knows what was omitted — it already saw and
+ * understood this image earlier in the conversation.
+ */
+function offloadPlaceholder(ref: ImageRef): string {
+  const size = parseImageSize(Buffer.from(ref.data, "base64"));
+  const dims = size ? ` ${size.width}x${size.height}px` : "";
+  const sha8 = FilesApiCache.digest(ref.data).slice(0, 8);
+  return `${OFFLOADED_IMAGE_TEXT} Omitted image: ${ref.mimeType}${dims} (sha256 ${sha8}), shown earlier in this conversation.`;
+}
+
+export interface ProcessOptions {
+  mode?: ImageFilesMode;
+  apiKey?: string;
+}
+
+/**
  * Transform one request payload. Returns the payload to send (possibly the
  * same object when nothing changed), plus a small stats record.
  */
 export async function processPayload(
   payload: any,
   cache: FilesApiCache,
-  apiKey?: string,
+  options: ProcessOptions = {},
 ): Promise<{ payload: any; uploaded: number; omitted: number; failed: number }> {
+  const mode = options.mode ?? "upload";
   const refs = collectImages(payload);
   if (refs.length === 0) return { payload, uploaded: 0, omitted: 0, failed: 0 };
 
   const omit = offloadCount(refs);
-  const omitted = omit;
-  const key = apiKey ?? resolveApiKey();
+  const key = mode === "upload" ? options.apiKey ?? resolveApiKey() : undefined;
 
   const resolved = new Map<number, { kind: "file"; fileId: string } | { kind: "base64" }>();
   let uploaded = 0;
@@ -128,8 +155,8 @@ export async function processPayload(
       resolved.set(i, { kind: "base64" }); // placeholder replaces it below
       continue;
     }
-    if (!key) {
-      failed += 1;
+    if (mode !== "upload" || !key) {
+      // offload-only mode, or no key: keep the image inline
       resolved.set(i, { kind: "base64" });
       continue;
     }
@@ -144,7 +171,7 @@ export async function processPayload(
   }
 
   // Everything already resolved: nothing to replace.
-  if (resolved.size === 0) return { payload, uploaded, omitted, failed };
+  if (resolved.size === 0) return { payload, uploaded, omitted: omit, failed };
 
   const messages = payload.messages;
   const nextMessages = messages.map((message: any, messageIndex: number) => {
@@ -163,9 +190,9 @@ export async function processPayload(
       const ref = refs[refIndex];
       if (!outcome || outcome.kind === "base64") {
         if (refIndex < omit) {
-          nextContent.push({ type: "text", text: OFFLOADED_IMAGE_TEXT });
+          nextContent.push({ type: "text", text: offloadPlaceholder(ref) });
         } else {
-          nextContent.push(content[blockIndex]); // upload failed: keep base64
+          nextContent.push(content[blockIndex]); // upload failed / offload-only: keep base64
         }
         continue;
       }
@@ -179,7 +206,7 @@ export async function processPayload(
     return { ...message, content: nextContent };
   });
 
-  return { payload: { ...payload, messages: nextMessages }, uploaded, omitted, failed };
+  return { payload: { ...payload, messages: nextMessages }, uploaded, omitted: omit, failed };
 }
 
 export { FilesApiCache };

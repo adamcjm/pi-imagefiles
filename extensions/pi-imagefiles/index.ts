@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { FilesApiCache } from "./src/files-api.ts";
-import { isEligible, processPayload } from "./src/scan.ts";
+import { processPayload, resolveMode } from "./src/scan.ts";
 
 export default function (pi: ExtensionAPI) {
   const cache = new FilesApiCache(join(getAgentDir(), "data"));
@@ -26,9 +26,9 @@ export default function (pi: ExtensionAPI) {
     try {
       const payload = event.payload as any;
       if (!payload || typeof payload !== "object") return;
-      // Official DeepSeek gateway + vision model only (see isEligible).
-      if (!isEligible(ctx.model as { id?: string; baseUrl?: string } | undefined, payload.model)) return;
-      const result = await processPayload(payload, cache);
+      const mode = resolveMode(ctx.model as { id?: string; baseUrl?: string } | undefined, payload.model);
+      if (mode === "none") return;
+      const result = await processPayload(payload, cache, { mode });
       return result.payload;
     } catch (error) {
       // Never block a request because of an extension bug; fall back to the

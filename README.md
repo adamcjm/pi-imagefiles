@@ -1,24 +1,35 @@
 # pi-imagefiles
 
-Upload images to the **DeepSeek Files API** and reference them by `file_id` in vision requests, keeping provider request bodies tiny. The same strategy `dsh` uses, built as a pi extension.
+**Adapted for DeepSeek vision models** — `deepseek-v4-flash-vision-exp` (and any `deepseek*vision*` model id). Uploads images to the **DeepSeek Files API** and references them by `file_id` in vision requests; third-party DeepSeek vision gateways get the same safety net via request trimming.
 
-## Why
+## The problem it solves
 
-Pi sends every screenshot as inline `data:image/...;base64,...` in the provider request. DeepSeek's API gateway rejects requests larger than 50 MB (`413 Request Entity Too Large`), and a long vision session — tens of screenshots at up to 4.5 MB of base64 each — hits that limit and the session can never continue.
+Pi sends every screenshot as inline `data:image/...;base64,...` in the provider request. **DeepSeek's API gateway rejects requests larger than 50 MB** (`413 Request Entity Too Large` — measured at 50,000,000 bytes: 47.9 MB passes, 48.0 MB fails). A long vision session — tens of screenshots at up to 4.5 MB of base64 each — eventually exceeds that limit, and the session can never continue.
 
-`pi-imagefiles` replaces each inline image with a short text handle plus a `{"type": "file", "file_id": "..."}` part (an extra ~200 bytes per image instead of ~4.5 MB), so request size barely grows no matter how many images a session accumulates.
+`pi-imagefiles` removes that ceiling:
+
+- **Official DeepSeek gateway** (`api.deepseek.com`): images are uploaded to the Files API and referenced by `file_id` — ~200 bytes on the wire per image instead of ~4.5 MB, so request size barely grows no matter how many images a session accumulates.
+- **Third-party DeepSeek vision gateways** (e.g. opencode zen/go, which re-export `deepseek-v4-flash-vision-exp` but have **no Files API** — verified `GET/POST /v1/files` → 404 — and enforce the same upstream ~50 MB limit): the extension trims the *oldest* images once the budget is exceeded, so the request never crosses the gateway limit.
 
 ## How it works
 
-Identical pipeline and budgets to `dsh` (deepseek-harness):
+Same pipeline and budgets as `dsh` (deepseek-harness):
 
-1. **Upload** — before each provider request, images are uploaded to `POST /v1/files` (`purpose=user_data`). Only requests targeting the **official DeepSeek gateway** (`api.deepseek.com`) with a **vision model** (`deepseek*vision*` model id) are touched; every other provider/model passes through untouched.
-2. **Reference** — each image block becomes `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]`, exactly the wire format the DeepSeek chat-completions API accepts.
-3. **Cache** — content-addressed by sha256 in `~/.pi/agent/data/pi-imagefiles-cache.json`; the same image uploads once and is reused across requests and sessions. Files live **7 days** (dsh's default), refreshed 1 hour before expiry.
-4. **Budget / offload** — the dsh defaults: **128 MiB** of file-referenced image bytes and **600 images** per request; over budget the *oldest* images are replaced with a placeholder text (`[image omitted to keep the request within its image limit; older images are omitted first...]`), in deterministic quanta (64 MiB / 20 images).
-5. **Fallback** — if the Files API fails, that image stays inline base64 (pre-extension behaviour). After 5 consecutive upload failures a circuit breaker inlines everything for an hour, so a broken Files API cannot slow down every request.
+1. **Recognize** — request mode is chosen by model id + baseUrl (see matrix below). Anything else passes through untouched.
+2. **Upload** (official only) — images are uploaded to `POST /v1/files` (`purpose=user_data`), then each image block becomes `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]` — the wire format the DeepSeek chat-completions API accepts.
+3. **Cache** (official only) — content-addressed by sha256 in `~/.pi/agent/data/pi-imagefiles-cache.json`; the same image uploads once and is reused across requests and sessions. Files live **7 days** (dsh's default), refreshed 1 hour before expiry.
+4. **Budget / offload** (all modes) — dsh defaults: **128 MiB** of image bytes and **600 images** per request; over budget the *oldest* images are replaced with a placeholder text that carries the **parsed image facts** (mime type, dimensions from the PNG/JPEG/WebP/GIF header, sha256), in deterministic quanta (64 MiB / 20 images). The model already saw and understood those images earlier in the conversation, so it can rely on that understanding.
+5. **Fallback** (official only) — if the Files API fails, that image stays inline base64. After 5 consecutive upload failures a circuit breaker inlines everything for an hour so a broken Files API cannot slow down every request.
 
-Verified against the live API: uploading a 5.6 MB screenshot and referencing it by `file_id` returns a correct model answer, and the request body for that image is ~200 bytes instead of 7.5 MB.
+## Mode matrix
+
+| Request target | Model id | Mode | Upload + file_id | Offload trimming |
+|---|---|---|---|---|
+| `api.deepseek.com` | `deepseek-v4-flash-vision-exp` / `deepseek*vision*` | `upload` | ✅ | ✅ |
+| Third-party gateway (e.g. `opencode.ai/zen/go/v1`) | `deepseek*vision*` | `offload-only` | ❌ (no Files API) | ✅ |
+| Any other provider | anything | `none` | ❌ | ❌ |
+
+Verified against the live API: uploading a 5.6 MB screenshot and referencing it by `file_id` returns a correct model answer, and that image costs ~200 bytes on the wire. For opencode zen/go, 2.4 MB→38.5 MB bodies pass but 48.1 MB fails with the upstream 413 — the same wall the offload trims avoid.
 
 ## Install
 
@@ -47,7 +58,7 @@ Nothing to do — the hook is active automatically for DeepSeek vision models.
 |---|---|
 | `purpose` | `user_data` |
 | File lifetime / refresh margin | 7 days / 1 h |
-| Max file-referenced bytes per request | 128 MiB |
+| Max image bytes per request | 128 MiB |
 | Max images per request | 600 |
 | Offload byte / count quantum | 64 MiB / 20 |
 | Upload timeout / retries | 30 s / 1 |
@@ -64,8 +75,9 @@ Integration check (real API): upload a screenshot, call `chat/completions` with 
 ## Notes
 
 - The image handle text carries the image's dimensions (parsed from PNG/JPEG/WebP/GIF headers) so the model understands the coordinate mapping.
+- `offload-only` mode never touches the network: no uploads, no cache writes, purely a deterministic trim of the request body.
 - Images uploaded through this extension are deleted from the cache only by `/imagefiles reset`; the Files API side expires them after 7 days.
-- **Scope guard**: the extension verifies both the model id (`deepseek*vision*`) *and* the request `baseUrl` (`api.deepseek.com`). Third-party gateways/proxies that re-export DeepSeek models under the same id are deliberately left untouched — their endpoints do not serve this Files API, and injecting a `{"type":"file"}` part they do not understand could fail the whole call. If the model metadata is unavailable the extension stays inert.
+- Non-DeepSeek providers are never touched — if you use another vision provider, the extension stays inert.
 
 ## License
 

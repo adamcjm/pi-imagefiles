@@ -1,7 +1,7 @@
 {
   "name": "pi-imagefiles",
-  "version": "1.0.0",
-  "description": "Upload images to the DeepSeek Files API and reference them by file_id in vision requests, keeping request bodies small — same strategy as dsh.",
+  "version": "1.1.0",
+  "description": "DeepSeek vision image offload for pi: Files API file_id references on the official gateway (deepseek-v4-flash-vision-exp), offload trimming on third-party gateways — kills the 50 MB 413 ceiling.",
   "keywords": [
     "pi-package",
     "pi",

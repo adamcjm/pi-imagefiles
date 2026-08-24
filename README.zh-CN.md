@@ -1,24 +1,35 @@
 # pi-imagefiles
 
-将图片上传到 **DeepSeek Files API**，在视觉请求中以 `file_id` 引用，使请求体保持极小。这是 `dsh` 使用的同款策略，以 pi 扩展的形式实现。
+**适配 DeepSeek 视觉模型** —— `deepseek-v4-flash-vision-exp`（及任何 `deepseek*vision*` 命名的模型）。将图片上传到 **DeepSeek Files API** 并在视觉请求中以 `file_id` 引用；第三方 DeepSeek 视觉网关则通过请求裁剪获得同样的安全网。
 
-## 为什么需要它
+## 解决的问题
 
-Pi 会把每张截图以 `data:image/...;base64,...` 内联进 provider 请求。DeepSeek 的 API 网关拒绝超过 50 MB 的请求（`413 Request Entity Too Large`）——一个长时间运行的视觉会话（几十张截图、每张 base64 最多 4.5 MB）会撞上这个上限，会话再也无法继续。
+Pi 会把每张截图以 `data:image/...;base64,...` 内联进 provider 请求。**DeepSeek 的 API 网关拒绝超过 50 MB 的请求**（`413 Request Entity Too Large` —— 实测阈值为 50,000,000 字节：47.9 MB 通过，48.0 MB 失败）。一个长时间运行的视觉会话（几十张截图、每张 base64 最多 4.5 MB）最终会超过该上限，会话再也无法继续。
 
-`pi-imagefiles` 将每张内联图片替换为一段简短文本句柄 + `{"type": "file", "file_id": "..."}` 引用块（每张约 200 字节，而非约 4.5 MB），因此无论会话积累了多少图片，请求体几乎不增长。
+`pi-imagefiles` 移除了这个天花板：
+
+- **DeepSeek 官方网关**（`api.deepseek.com`）：图片上传到 Files API，以 `file_id` 引用 —— 每张图片在线路上仅约 200 字节（内联时约 4.5 MB），会话积累多少图片请求体都几乎不增长。
+- **三方 DeepSeek 视觉网关**（如 opencode zen/go —— 它转出 `deepseek-v4-flash-vision-exp` 模型，但**没有 Files API**（实测 `GET/POST /v1/files` → 404），并且透传上游约 50 MB 的同一限制）：扩展在预算超限时裁剪*最旧*的图片，保证请求永不越线。
 
 ## 工作原理
 
-与 `dsh`（deepseek-harness）完全一致的流程和预算：
+与 `dsh`（deepseek-harness）一致的流程和预算：
 
-1. **上传** —— 每次 provider 请求前，图片上传到 `POST /v1/files`（`purpose=user_data`）。仅作用于目标为 **DeepSeek 官方网关**（`api.deepseek.com`）且为 **视觉模型**（`deepseek*vision*` 模型 id）的请求；其他 provider/模型完全不受影响。
-2. **引用** —— 每个图片块替换为 `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]`，这正是 DeepSeek chat-completions API 接受的线格式。
-3. **缓存** —— 以 sha256 内容寻址，存于 `~/.pi/agent/data/pi-imagefiles-cache.json`；同一张图只上传一次，跨请求、跨会话复用。文件有效期 **7 天**（dsh 默认值），过期前 1 小时自动重新上传。
-4. **预算 / 卸载** —— 采用 dsh 默认值：每请求 **128 MiB** 文件引用图片字节、**600 张** 图片上限；超预算时*最旧*的图片替换为占位文本（`[image omitted to keep the request within its image limit; older images are omitted first...]`），以确定性的量子（64 MiB / 20 张）裁剪。
-5. **回退** —— Files API 失败时该图片保留 base64 内联（与原行为一致）；连续 5 次上传失败后熔断 1 小时（全部内联），避免 Files API 故障拖慢每个请求。
+1. **识别** —— 根据模型 id + baseUrl 选择处理模式（见下方矩阵）；其他请求原样通过。
+2. **上传**（仅官方）—— 图片上传到 `POST /v1/files`（`purpose=user_data`），随后每个图片块替换为 `[{"type":"text","text":"Image <sha8>; image/png WxHpx."},{"type":"file","file_id":"file-api-..."}]` —— 正是 DeepSeek chat-completions API 接受的线格式。
+3. **缓存**（仅官方）—— 以 sha256 内容寻址存于 `~/.pi/agent/data/pi-imagefiles-cache.json`；同一张图只上传一次，跨请求、跨会话复用。文件有效期 **7 天**（dsh 默认值），过期前 1 小时自动重新上传。
+4. **预算 / 卸载**（所有模式）—— dsh 默认值：每请求 **128 MiB** 图片字节、**600 张**上限；超预算时*最旧*的图片替换为带**解析图片信息**的占位文本（mime 类型、从 PNG/JPEG/WebP/GIF 头部解析的尺寸、sha256），按确定性量子（64 MiB / 20 张）裁剪。这些图片模型此前已在会话中看到并理解过，可依赖该理解。
+5. **回退**（仅官方）—— Files API 失败时该图片保留 base64 内联（与原行为一致）；连续 5 次上传失败后熔断 1 小时（全部内联），避免 Files API 故障拖慢每个请求。
 
-已对线上 API 验证：上传 5.6 MB 截图并以 `file_id` 引用，模型能正确识别图片内容，且该图在请求体中仅占约 200 字节（内联时约 7.5 MB）。
+## 模式矩阵
+
+| 请求目标 | 模型 id | 模式 | 上传 + file_id | 卸载裁剪 |
+|---|---|---|---|---|
+| `api.deepseek.com` | `deepseek-v4-flash-vision-exp` / `deepseek*vision*` | `upload` | ✅ | ✅ |
+| 三方网关（如 `opencode.ai/zen/go/v1`） | `deepseek*vision*` | `offload-only` | ❌（无 Files API） | ✅ |
+| 任何其他 provider | 其他 | `none` | ❌ | ❌ |
+
+已对线上 API 验证：上传 5.6 MB 截图并以 `file_id` 引用，模型能正确识别图片内容，该图在线路上仅约 200 字节。对于 opencode zen/go：2.4 MB→38.5 MB 的请求体通过，48.1 MB 被上游 413 拒绝——正是卸载裁剪要避开的同一堵墙。
 
 ## 安装
 
@@ -47,7 +58,7 @@ ln -s ~/pi/dev/pi-imagefiles/extensions/pi-imagefiles ~/.pi/agent/extensions/pi-
 |---|---|
 | `purpose` | `user_data` |
 | 文件有效期 / 刷新余量 | 7 天 / 1 小时 |
-| 每请求文件引用字节上限 | 128 MiB |
+| 每请求图片字节上限 | 128 MiB |
 | 每请求图片数量上限 | 600 |
 | 卸载字节 / 数量量子 | 64 MiB / 20 |
 | 上传超时 / 重试 | 30 秒 / 1 次 |
@@ -64,8 +75,9 @@ bun run test/run-tests.ts   # 单元自检，无需网络
 ## 说明
 
 - 图片句柄文本包含图片尺寸（从 PNG/JPEG/WebP/GIF 头部解析），帮助模型理解坐标映射。
+- `offload-only` 模式不触碰网络：不上传、不写缓存，纯粹是对请求体的确定性裁剪。
 - 通过本扩展上传的图片仅由 `/imagefiles reset` 从缓存删除；Files API 侧 7 天后自动过期。
-- **作用域守卫**：扩展同时校验模型 id（`deepseek*vision*`）与请求 `baseUrl`（`api.deepseek.com`）。三方网关/中转站即使导出同名 DeepSeek 模型也被刻意排除——它们的端点并不提供本扩展依赖的 Files API，向其请求注入它们不认识的 `{"type":"file"}` 部分可能导致整个调用失败。当模型元数据不可用时扩展保持惰性。
+- 非 DeepSeek 的 provider 绝不触碰 —— 使用其他视觉 provider 时本扩展保持惰性。
 
 ## 许可证
 
