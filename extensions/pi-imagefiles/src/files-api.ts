@@ -22,12 +22,16 @@ const UPLOAD_TIMEOUT_MS = 30_000;
 const UPLOAD_RETRIES = 1;
 const CIRCUIT_BREAKER_FAILURES = 5;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 60 * 60 * 1000;
+const VERIFY_INTERVAL_MS = 5 * 60 * 1000; // re-check a file_id at most every 5 min
+const VERIFY_TIMEOUT_MS = 15_000;
 
 export interface CacheEntry {
   fileId: string;
   bytes: number;
   mimeType: string;
   uploadedAt: number;
+  /** Last time the file_id was confirmed to exist server-side. */
+  lastVerifiedAt?: number;
 }
 
 interface CacheFile {
@@ -73,6 +77,31 @@ async function upload(bytes: Uint8Array, mimeType: string, apiKey: string): Prom
     const json = (await res.json()) as { id?: string };
     if (!json.id) throw new Error("Files API upload returned no id");
     return json.id;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * True when the file_id still exists server-side. 400/404 mean "does not
+ * exist or is not created under your account" → false. Network errors and
+ * 5xx are inconclusive and treated as alive (never delete a valid mapping
+ * because of a transient verification failure).
+ */
+async function fileIdExists(fileId: string, apiKey: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://api.deepseek.com/v1/files/${encodeURIComponent(fileId)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (res.status === 200) return true;
+    if (res.status === 400 || res.status === 404) return false;
+    return true; // 401/403/5xx/network: inconclusive, keep the mapping
+  } catch {
+    return true; // timeout/network error: inconclusive, keep the mapping
   } finally {
     clearTimeout(timer);
   }
@@ -139,6 +168,11 @@ export class FilesApiCache {
   /**
    * Resolve one image to a file_id. Returns undefined when the image was
    * uploaded before but expired (no usable file), or when uploads fail.
+   *
+   * Cached mappings are periodically re-verified against the Files API (at
+   * most every VERIFY_INTERVAL_MS per file). A mapping whose file_id was
+   * deleted server-side is dropped and the image re-uploaded transparently —
+   * this is what prevents the "file_ids do not exist" 400 from repeating.
    */
   async resolve(
     data: string,
@@ -151,8 +185,15 @@ export class FilesApiCache {
     await this.load();
     const cached = this.data.files[digest];
     if (cached && this.isFresh(cached)) {
-      this.noteUploadResult(true);
-      return { fileId: cached.fileId, uploaded: false };
+      const verified = await this.verifyIfStale(cached, apiKey);
+      if (verified) {
+        this.noteUploadResult(true);
+        return { fileId: cached.fileId, uploaded: false };
+      }
+      // file_id vanished server-side: drop the mapping and re-upload below
+      delete this.data.files[digest];
+      await this.save();
+      console.error(`[pi-imagefiles] cached file_id ${cached.fileId} no longer exists server-side; re-uploading`);
     }
     const pending = this.inflight.get(digest);
     if (pending) {
@@ -175,12 +216,24 @@ export class FilesApiCache {
     }
   }
 
+  /** Verify a fresh mapping at most once per VERIFY_INTERVAL_MS. */
+  private async verifyIfStale(entry: CacheEntry, apiKey: string): Promise<boolean> {
+    const last = entry.lastVerifiedAt ?? 0;
+    if (Date.now() - last < VERIFY_INTERVAL_MS) return true;
+    const ok = await fileIdExists(entry.fileId, apiKey);
+    if (ok) {
+      entry.lastVerifiedAt = Date.now();
+      await this.save();
+    }
+    return ok;
+  }
+
   private async doUpload(digest: string, data: string, mimeType: string, bytes: number, apiKey: string): Promise<string> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt++) {
       try {
         const fileId = await upload(Buffer.from(data, "base64"), mimeType, apiKey);
-        this.data.files[digest] = { fileId, bytes, mimeType, uploadedAt: Date.now() };
+        this.data.files[digest] = { fileId, bytes, mimeType, uploadedAt: Date.now(), lastVerifiedAt: Date.now() };
         await this.save();
         this.noteUploadResult(true);
         return fileId;

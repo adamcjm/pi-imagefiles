@@ -1,6 +1,6 @@
 {
   "name": "pi-imagefiles",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "DeepSeek vision image offload for pi: Files API file_id references on the official gateway (deepseek-v4-flash-vision-exp), offload trimming on third-party gateways — kills the 50 MB 413 ceiling.",
   "keywords": [
     "pi-package",

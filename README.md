@@ -20,6 +20,7 @@ Same pipeline and budgets as `dsh` (deepseek-harness):
 3. **Cache** (official only) — content-addressed by sha256 in `~/.pi/agent/data/pi-imagefiles-cache.json`; the same image uploads once and is reused across requests and sessions. Files live **7 days** (dsh's default), refreshed 1 hour before expiry.
 4. **Budget / offload** (all modes) — dsh defaults: **128 MiB** of image bytes and **600 images** per request; over budget the *oldest* images are replaced with a placeholder text that carries the **parsed image facts** (mime type, dimensions from the PNG/JPEG/WebP/GIF header, sha256), in deterministic quanta (64 MiB / 20 images). The model already saw and understood those images earlier in the conversation, so it can rely on that understanding.
 5. **Fallback** (official only) — if the Files API fails, that image stays inline base64. After 5 consecutive upload failures a circuit breaker inlines everything for an hour so a broken Files API cannot slow down every request.
+6. **Liveness check** (official only) — cached `file_id` mappings are re-verified against the Files API (at most every 5 minutes per file). A mapping whose file was deleted server-side (`file_id does not exist or is not created under your account` → 400) is dropped and the image re-uploaded transparently, so a stale reference can never wedge a session. Network/5xx verification errors are treated as inconclusive and never delete a valid mapping.
 
 ## Mode matrix
 
