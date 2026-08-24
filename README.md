@@ -37,11 +37,7 @@ Verified against the live API: uploading a 5.6 MB screenshot and referencing it 
 ## Install
 
 ```bash
-# from npm
 pi install pi-imagefiles
-
-# or local dev link
-ln -s ~/pi/dev/pi-imagefiles/extensions/pi-imagefiles ~/.pi/agent/extensions/pi-imagefiles
 ```
 
 `pi-imagefiles` needs the DeepSeek API key: it reads `~/.pi/agent/auth.json` (`deepseek`) like pi does, falling back to the `DEEPSEEK_API_KEY` environment variable.

@@ -37,11 +37,7 @@ Pi 会把每张截图以 `data:image/...;base64,...` 内联进 provider 请求�
 ## 安装
 
 ```bash
-# 从 npm 安装
 pi install pi-imagefiles
-
-# 或本地开发软链
-ln -s ~/pi/dev/pi-imagefiles/extensions/pi-imagefiles ~/.pi/agent/extensions/pi-imagefiles
 ```
 
 `pi-imagefiles` 需要 DeepSeek API key：像 pi 一样读取 `~/.pi/agent/auth.json`（`deepseek`），没有则回退到 `DEEPSEEK_API_KEY` 环境变量。
