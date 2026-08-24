@@ -1,5 +1,7 @@
 # pi-imagefiles
 
+**English** · [中文](https://github.com/adamcjm/pi-imagefiles/blob/main/README.zh-CN.md)
+
 **Adapted for DeepSeek vision models** — `deepseek-v4-flash-vision-exp` (and any `deepseek*vision*` model id). Uploads images to the **DeepSeek Files API** and references them by `file_id` in vision requests; third-party DeepSeek vision gateways get the same safety net via request trimming.
 
 ## The problem it solves

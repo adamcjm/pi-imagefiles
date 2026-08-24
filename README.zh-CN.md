@@ -1,5 +1,7 @@
 # pi-imagefiles
 
+[English](https://github.com/adamcjm/pi-imagefiles/blob/main/README.md) · **中文**
+
 **适配 DeepSeek 视觉模型** —— `deepseek-v4-flash-vision-exp`（及任何 `deepseek*vision*` 命名的模型）。将图片上传到 **DeepSeek Files API** 并在视觉请求中以 `file_id` 引用；第三方 DeepSeek 视觉网关则通过请求裁剪获得同样的安全网。
 
 ## 解决的问题
