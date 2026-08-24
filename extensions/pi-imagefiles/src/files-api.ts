@@ -41,6 +41,19 @@ interface CacheFile {
 
 const CACHE_FILENAME = "pi-imagefiles-cache.json";
 
+/** Environment override for the cache directory (used by tests to keep the
+ *  user's real cache untouched — the user cache must never reference
+ *  files uploaded by test runs). */
+export const CACHE_DIR_ENV = "PI_IMAGEFILES_CACHE_DIR";
+
+/** Resolve the cache directory: explicit > env override > agent data dir. */
+export function resolveCacheDir(explicit?: string): string {
+  if (explicit) return explicit;
+  const env = process.env[CACHE_DIR_ENV];
+  if (env) return env;
+  return join(getAgentDir(), "data");
+}
+
 /** API key resolution: pi's auth.json first, then DEEPSEEK_API_KEY env. */
 export function resolveApiKey(): string | undefined {
   try {
@@ -117,7 +130,7 @@ export class FilesApiCache {
   constructor(private cacheDir?: string) {}
 
   private get cachePath(): string {
-    const base = this.cacheDir ?? join(getAgentDir(), "data");
+    const base = resolveCacheDir(this.cacheDir);
     return join(base, CACHE_FILENAME);
   }
 

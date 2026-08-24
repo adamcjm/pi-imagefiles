@@ -14,13 +14,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
 import { FilesApiCache } from "./src/files-api.ts";
 import { processPayload, resolveMode } from "./src/scan.ts";
 
 export default function (pi: ExtensionAPI) {
-  const cache = new FilesApiCache(join(getAgentDir(), "data"));
+  const cache = new FilesApiCache(); // dir: $PI_IMAGEFILES_CACHE_DIR or ~/.pi/agent/data
 
   pi.on("before_provider_request", async (event, ctx) => {
     try {

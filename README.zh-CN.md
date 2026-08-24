@@ -69,9 +69,10 @@ ln -s ~/pi/dev/pi-imagefiles/extensions/pi-imagefiles ~/.pi/agent/extensions/pi-
 
 ```bash
 bun run test/run-tests.ts   # 单元自检，无需网络
+PI_IMAGEFILES_CACHE_DIR=/tmp/pi-imagefiles-it bun run test/integration.ts <png>  # 真实 API
 ```
 
-集成验证（真实 API）：上传截图，用转换后的 payload 调用 `chat/completions`。
+集成测试使用**隔离缓存目录**（`PI_IMAGEFILES_CACHE_DIR`），测试上传绝不污染用户真实缓存；测试文件事后从服务端删除。切勿对真实缓存运行集成测试——文件在服务端被删而会话仍引用它，正是本扩展要防的过期 `file_id` 400。
 
 ## 说明
 

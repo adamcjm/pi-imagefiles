@@ -69,9 +69,14 @@ Nothing to do — the hook is active automatically for DeepSeek vision models.
 
 ```bash
 bun run test/run-tests.ts   # unit self-check, no network
+PI_IMAGEFILES_CACHE_DIR=/tmp/pi-imagefiles-it bun run test/integration.ts <png>  # real API
 ```
 
-Integration check (real API): upload a screenshot, call `chat/completions` with the transformed payload.
+Integration runs use an **isolated cache directory** (`PI_IMAGEFILES_CACHE_DIR`)
+so test uploads never pollute the user's real cache — and test files are
+deleted server-side afterwards. Never run integration tests against the real
+cache: a file deleted server-side while the session still references it is
+exactly the stale `file_id` 400 this extension protects against.
 
 ## Notes
 
