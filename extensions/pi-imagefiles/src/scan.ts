@@ -4,11 +4,16 @@
  * Mode "upload" (official DeepSeek gateway, api.deepseek.com):
  *   inline base64 images → Files API upload → text + {"type":"file","file_id":...}
  * Mode "offload-only" (third-party DeepSeek vision gateways like opencode
- *   zen/go — no Files API, same 50 MiB upstream limit):
- *   no uploads; only the dsh-style offload budget keeps the request small.
+ *   zen/go — no Files API, and the upstream DeepSeek gateway rejects
+ *   file_ids uploaded under someone else's key, so images must stay inline):
+ *   no uploads; the offload budget keeps the inline request under the
+ *   upstream 48 MiB request-body limit.
  *
  * Budgets mirror dsh-llm-deepseek defaults:
- *   maxRequestFilesBytes   128 MiB   (file-referenced image bytes)
+ *   maxRequestFilesBytes   128 MiB   (file-referenced image bytes; docs cap
+ *                                     requests containing file_ids at 200 MiB)
+ *   offloadOnlyBytesBudget  40 MiB   (inline base64 → 48 MiB request-body
+ *                                     limit minus JSON overhead)
  *   maxImagesPerRequest    600
  *   imageOffloadByteQuantum 64 MiB
  *   imageOffloadCountQuantum 20
@@ -21,6 +26,9 @@ import { parseImageSize } from "./image-size.ts";
 import { FilesApiCache, resolveApiKey } from "./files-api.ts";
 
 export const MAX_REQUEST_FILES_BYTES = 128 * 1024 * 1024;
+/** offload-only: images stay inline, so the budget must fit the upstream
+ *  48 MiB request-body limit (46.875 MiB of base64 + JSON overhead). */
+export const OFFLOAD_ONLY_MAX_BYTES = 40 * 1024 * 1024;
 export const MAX_IMAGES_PER_REQUEST = 600;
 const BYTE_QUANTUM = 64 * 1024 * 1024;
 const COUNT_QUANTUM = 20;
@@ -41,8 +49,8 @@ export type ImageFilesMode = "upload" | "offload-only" | "none";
  * - "offload-only": deepseek*vision* model elsewhere (third-party gateways that
  *   re-export the model, no model metadata, etc.) → offload only, no uploads,
  *   because injecting {"type":"file"} into a gateway that does not understand
- *   it could fail the whole call. The upstream still enforces the same ~50 MiB
- *   request limit, so trimming is safe and useful.
+ *   it could fail the whole call. The upstream still enforces the same 48 MiB
+ *   request-body limit, so trimming is safe and useful.
  * - "none": anything else.
  */
 export function resolveMode(model: { id?: string; baseUrl?: string } | undefined, payloadModel: unknown): ImageFilesMode {
@@ -142,7 +150,7 @@ export async function processPayload(
   const refs = collectImages(payload);
   if (refs.length === 0) return { payload, uploaded: 0, omitted: 0, failed: 0 };
 
-  const omit = offloadCount(refs);
+  const omit = offloadCount(refs, mode === "upload" ? undefined : OFFLOAD_ONLY_MAX_BYTES);
   const key = mode === "upload" ? options.apiKey ?? resolveApiKey() : undefined;
 
   const resolved = new Map<number, { kind: "file"; fileId: string } | { kind: "base64" }>();

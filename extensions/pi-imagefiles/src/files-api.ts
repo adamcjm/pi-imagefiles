@@ -4,7 +4,9 @@
  * Mirrors dsh's strategy (dsh-llm-deepseek):
  *   - upload images to POST /v1/files with purpose=user_data, reference them
  *     in chat requests as {"type":"file","file_id":"file-api-..."}
- *   - files live 7 days (deepseek-harness default), refresh 1h before expiry
+ *   - files live 30 days (the docs' maximum expires_after), refresh 1h
+ *     before expiry — long enough that uploads stay rare, short enough
+ *     that the 25 GiB / 10,000-file account quota cannot fill up
  *   - cache keyed by sha256 so the same image uploads once per session
  *   - upload failures fall back to base64 inlining (the pre-extension
  *     behaviour) and trip a circuit breaker so a broken Files API cannot
@@ -16,7 +18,9 @@ import { promises as fsp, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export const FILE_EXPIRY_SECONDS = 10080 * 60; // 7 days, dsh default
+export const FILE_EXPIRY_SECONDS = 30 * 24 * 3600; // 30 days, docs' maximum expires_after
+// docs: expires_after[seconds] ∈ [3600, 2592000]; omit = permanent, which
+// would let the 25 GiB / 10,000-file quota fill up forever.
 export const FILE_REFRESH_MARGIN_SECONDS = 3600; // re-upload 1h before expiry
 const UPLOAD_TIMEOUT_MS = 30_000;
 const UPLOAD_RETRIES = 1;
@@ -74,6 +78,8 @@ export function resolveApiKey(): string | undefined {
 async function upload(bytes: Uint8Array, mimeType: string, apiKey: string): Promise<string> {
   const form = new FormData();
   form.append("purpose", "user_data");
+  form.append("expires_after[anchor]", "created_at");
+  form.append("expires_after[seconds]", String(FILE_EXPIRY_SECONDS));
   form.append("file", new Blob([bytes as BlobPart], { type: mimeType }), "image");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);

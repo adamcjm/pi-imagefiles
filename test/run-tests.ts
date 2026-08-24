@@ -6,7 +6,8 @@
 import assert from "node:assert";
 import { collectImages, offloadCount, processPayload, resolveMode, DEEPSEEK_VISION_MODEL_RE } from "../extensions/pi-imagefiles/src/scan.ts";
 import { parseImageSize } from "../extensions/pi-imagefiles/src/image-size.ts";
-import { FilesApiCache, FILE_EXPIRY_SECONDS } from "../extensions/pi-imagefiles/src/files-api.ts";
+import { FilesApiCache, FILE_EXPIRY_SECONDS, FILE_REFRESH_MARGIN_SECONDS } from "../extensions/pi-imagefiles/src/files-api.ts";
+import { OFFLOAD_ONLY_MAX_BYTES } from "../extensions/pi-imagefiles/src/scan.ts";
 
 function pngBytes(w: number, h: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -86,6 +87,11 @@ assert.equal(offloadCount(manyRefs), 20, "605 images / 600 budget drops 20 (coun
 // under budget
 const smallRefs = [{ messageIndex: 0, blockIndex: 1, mimeType: "image/png", data: "x", bytes: 1024 }];
 assert.equal(offloadCount(smallRefs), 0, "under budget keeps everything");
+// offload-only budget (inline base64 must fit the upstream 48 MiB request)
+const inlineRefs = [1, 2, 3].map((n) => ({ messageIndex: 0, blockIndex: n, mimeType: "image/png", data: "x", bytes: 50 * mb }));
+assert.equal(offloadCount(inlineRefs, OFFLOAD_ONLY_MAX_BYTES), 3, "150 MiB inline vs 40 MiB offload-only budget: all 3 dropped");
+const okInlineRefs = [{ messageIndex: 0, blockIndex: 1, mimeType: "image/png", data: "x", bytes: 30 * mb }];
+assert.equal(offloadCount(okInlineRefs, OFFLOAD_ONLY_MAX_BYTES), 0, "30 MiB inline fits the 40 MiB offload-only budget");
 console.log("ok offloadCount");
 
 // --- 4. processPayload replacement ----------------------------------------
@@ -155,7 +161,8 @@ assert.deepEqual(parseImageSize(jpeg), { width: 320, height: 240 }, "JPEG dims")
 console.log("ok parseImageSize");
 
 // --- 8. cache expiry -------------------------------------------------------
-assert.equal(FILE_EXPIRY_SECONDS, 7 * 24 * 3600, "expiry is 7 days");
+assert.equal(FILE_EXPIRY_SECONDS, 30 * 24 * 3600, "expiry is 30 days (docs maximum, keeps the 25 GiB quota from filling)");
+assert.ok(FILE_REFRESH_MARGIN_SECONDS < 3600 * 2, "refresh margin is an hour")
 console.log("ok cache constants");
 
 console.log("\nALL TESTS PASSED");

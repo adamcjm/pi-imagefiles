@@ -4,9 +4,10 @@
  * Before every provider request, inline base64 images are uploaded to
  * DeepSeek's /v1/files and replaced with text + {"type":"file","file_id":...}
  * parts — the exact strategy dsh uses. Request bodies stay tiny regardless
- * of how many screenshots a session accumulates, so the 50 MiB gateway
- * limit can never be hit. Only deepseek *vision* models are touched; all
- * other providers/models pass through untouched.
+ * of how many screenshots a session accumulates, so the 48 MiB gateway
+ * limit can never be hit. Files live 30 days (docs maximum). Only deepseek
+ * *vision* models are touched; all other providers/models pass through
+ * untouched.
  *
  * Commands:
  *   /imagefiles             show cache status
